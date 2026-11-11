@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>MacroTrack</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>tailwind.config={darkMode:'class'}</script>
+<style>
+:root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px)}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{background:#f8fafc;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+html.dark body{background:#020617}
+</style>
+</head>
+<body class="text-slate-900 dark:text-slate-100">
+<a href="#main" class="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-50 focus:bg-white focus:text-black focus:p-2 focus:rounded">Skip to content</a>
+<div id="root"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.26.4/babel.min.js"></script>
+<script type="text/plain" id="src">
+const {useState,useEffect,useMemo}=React;
+type Meal='breakfast'|'lunch'|'dinner'|'snacks';
+type Food={name:string;serving:string;cal:number;p:number;c:number;f:number};
+type Entry=Food&{id:string;date:string;meal:Meal;servings:number};
+type Profile={age:number;sex:'male'|'female';cm:number;kg:number;units:'metric'|'imperial';activity:number;goal:'lose'|'maintain'|'gain';goalKg:number};
+type Goals={cal:number;p:number;c:number;f:number};
+type Quest={id:string;name:string;unit:string;goal:number;inc:number};
+type Data={profile:Profile;goals:Goals;entries:Entry[];weights:{date:string;kg:number}[];custom:Food[];meals:{id:string;name:string;items:Food[]}[];dark:boolean;quests:Quest[];qlog:Record<string,Record<string,number>>;awards:Record<string,number>};
+
+const KEY='macrotrack-v1';
+const iso=(d:Date)=>d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+const today=()=>iso(new Date());
+const addDays=(s:string,n:number)=>{const [y,m,d]=s.split('-').map(Number);return iso(new Date(y,m-1,d+n))};
+const nice=(s:string)=>new Date(s+'T00:00:00').toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'});
+const uid=()=>Math.random().toString(36).slice(2,9);
+const r=(n:number)=>Math.round(n);
+const f1=(n:number)=>Math.round(n*10)/10;
+const tot=(es:Entry[])=>es.reduce((a,e)=>({cal:a.cal+e.cal*e.servings,p:a.p+e.p*e.servings,c:a.c+e.c*e.servings,f:a.f+e.f*e.servings}),{cal:0,p:0,c:0,f:0});
+const dW=(kg:number,u:string)=>u==='metric'?kg:kg*2.20462;
+const fW=(v:number,u:string)=>u==='metric'?v:v/2.20462;
+const dH=(cm:number,u:string)=>u==='metric'?cm:cm/2.54;
+const fH=(v:number,u:string)=>u==='metric'?v:v*2.54;
+const bmr=(p:Profile)=>10*p.kg+6.25*p.cm-5*p.age+(p.sex==='male'?5:-161);
+const tdee=(p:Profile)=>bmr(p)*p.activity;
+const target=(p:Profile)=>Math.max(1200,r((tdee(p)+(p.goal==='lose'?-500:p.goal==='gain'?300:0))/10)*10);
+const macros=(p:Profile):Goals=>{const cal=target(p),pr=r(p.kg*(p.goal==='lose'?2:p.goal==='gain'?1.8:1.6)),f=r(cal*0.25/9);return{cal,p:pr,f,c:Math.max(0,r((cal-pr*4-f*9)/4))}};
+const ACT:[number,string][]=[[1.2,'Sedentary (little or no exercise)'],[1.375,'Lightly active (1–3 days/week)'],[1.55,'Moderately active (3–5 days/week)'],[1.725,'Very active (6–7 days/week)'],[1.9,'Extra active (physical job + training)']];
+const MEALS:[Meal,string][]=[['breakfast','Breakfast'],['lunch','Lunch'],['dinner','Dinner'],['snacks','Snacks']];
+
+const XPT=(l:number)=>50*(l-1)*(l-1);
+const lvl=(xp:number)=>Math.floor(Math.sqrt(xp/50))+1;
+const rank=(l:number)=>l<5?'E':l<10?'D':l<15?'C':l<20?'B':l<30?'A':'S';
+const sumXp=(a:Record<string,number>)=>Object.values(a).reduce((x,y)=>x+y,0);
+const DEFQ=():Quest[]=>[{id:'w',name:'Drink water',unit:'glasses',goal:8,inc:1},{id:'s',name:'Walk',unit:'steps',goal:8000,inc:1000},{id:'p',name:'Push-ups',unit:'reps',goal:30,inc:10}];
+const streak=(es:Entry[])=>{const s=new Set(es.map(e=>e.date));let n=0,x=today();if(!s.has(x))x=addDays(x,-1);while(s.has(x)){n++;x=addDays(x,-1)}return n};
+const byDay=(d:Data)=>{const m:Record<string,{cal:number;p:number}>={};d.entries.forEach(e=>{const x=m[e.date]||(m[e.date]={cal:0,p:0});x.cal+=e.cal*e.servings;x.p+=e.p*e.servings});return Object.values(m)};
+const ACH:{id:string;name:string;desc:string;xp:number;ok:(d:Data,qn:number,all:number)=>boolean}[]=[
+{id:'log1',name:'First Bite',desc:'Log your first food',xp:30,ok:d=>d.entries.length>0},
+{id:'log3',name:'Warming Up',desc:'Log food 3 days in a row',xp:60,ok:d=>streak(d.entries)>=3},
+{id:'log7',name:'Week Warrior',desc:'Log food 7 days in a row',xp:120,ok:d=>streak(d.entries)>=7},
+{id:'prot',name:'Protein Power',desc:'Hit your protein goal in a day',xp:60,ok:d=>byDay(d).some(x=>x.p>=d.goals.p*0.95)},
+{id:'cal',name:'Right on Target',desc:'Finish a day within 10% of your calorie goal',xp:60,ok:d=>byDay(d).some(x=>x.cal>=d.goals.cal*0.9&&x.cal<=d.goals.cal*1.1)},
+{id:'wt',name:'On the Scale',desc:'Log 3 weigh-ins',xp:40,ok:d=>d.weights.length>=3},
+{id:'q1',name:'First Quest',desc:'Clear your first daily quest',xp:40,ok:(d,q)=>q>=1},
+{id:'clear',name:'Daily Clear',desc:'Clear every quest in one day',xp:80,ok:(d,q,a)=>a>=1},
+{id:'clear3',name:'Triple Clear',desc:'Clear all quests on 3 different days',xp:200,ok:(d,q,a)=>a>=3},
+{id:'q10',name:'Quest Grinder',desc:'Clear 10 quests in total',xp:100,ok:(d,q)=>q>=10},
+{id:'q50',name:'Quest Legend',desc:'Clear 50 quests in total',xp:250,ok:(d,q)=>q>=50}];
+const earn=(d:Data)=>{const a:Record<string,number>={};let qn=0,all=0;
+ Object.entries(d.qlog).forEach(([dt,m])=>{let n=0;d.quests.forEach(q=>{if((m[q.id]||0)>=q.goal){a[`q:${dt}:${q.id}`]=25;n++;qn++}});if(d.quests.length>0&&n===d.quests.length){a[`all:${dt}`]=50;all++}});
+ qn=Math.max(qn,Object.keys(d.awards).filter(k=>k.startsWith('q:')).length);all=Math.max(all,Object.keys(d.awards).filter(k=>k.startsWith('all:')).length);
+ ACH.forEach(x=>{if(x.ok(d,qn,all))a['a:'+x.id]=x.xp});return a};
+
+const FOODS:Food[]=[
+{name:'Oatmeal, cooked',serving:'1 cup',cal:160,p:6,c:28,f:3},{name:'Banana',serving:'1 medium',cal:105,p:1,c:27,f:0},
+{name:'Egg, large',serving:'1 egg',cal:72,p:6,c:0,f:5},{name:'Greek yogurt, nonfat',serving:'170 g',cal:100,p:17,c:6,f:1},
+{name:'Whole wheat toast',serving:'1 slice',cal:80,p:4,c:14,f:1},{name:'Chicken breast, grilled',serving:'100 g',cal:165,p:31,c:0,f:4},
+{name:'White rice, cooked',serving:'1 cup',cal:205,p:4,c:45,f:0},{name:'Broccoli, steamed',serving:'1 cup',cal:55,p:4,c:11,f:1},
+{name:'Salmon, baked',serving:'100 g',cal:206,p:22,c:0,f:12},{name:'Sweet potato, baked',serving:'1 medium',cal:112,p:2,c:26,f:0},
+{name:'Mixed salad with olive oil',serving:'1 bowl',cal:120,p:2,c:8,f:10},{name:'Pasta, cooked',serving:'1 cup',cal:220,p:8,c:43,f:1},
+{name:'Ground beef, 90% lean',serving:'100 g',cal:217,p:26,c:0,f:12},{name:'Almonds',serving:'28 g',cal:164,p:6,c:6,f:14},
+{name:'Apple',serving:'1 medium',cal:95,p:0,c:25,f:0},{name:'Peanut butter',serving:'2 tbsp',cal:190,p:7,c:7,f:16},
+{name:'Avocado',serving:'1/2 fruit',cal:120,p:1,c:6,f:11},{name:'Cottage cheese, low-fat',serving:'1/2 cup',cal:90,p:12,c:5,f:2},
+{name:'Protein shake',serving:'1 scoop + water',cal:120,p:24,c:3,f:1},{name:'Black beans, cooked',serving:'1/2 cup',cal:114,p:8,c:20,f:0}];
+
+function sample():Data{
+ const t=today(),F=(n:string)=>FOODS.find(x=>x.name.startsWith(n))!;
+ const plans:[Meal,[string,number][]][]=[['breakfast',[['Oatmeal',1],['Banana',1],['Egg',2],['Whole',2]]],['lunch',[['Chicken',1.5],['White rice',1],['Broccoli',1],['Avocado',1]]],['dinner',[['Salmon',1.5],['Sweet',1],['Mixed',1],['Pasta',1]]],['snacks',[['Greek',1],['Almonds',1],['Protein',1]]]];
+ let s=7;const rnd=()=>{s=(s*9301+49297)%233280;return s/233280};
+ const entries:Entry[]=[];
+ for(let i=13;i>=0;i--){const date=addDays(t,-i);plans.forEach(([meal,items],mi)=>{if(i===0&&mi>1)return;items.forEach(([n,q])=>{const f=F(n);entries.push({...f,id:uid(),date,meal,servings:Math.max(0.5,Math.round(q*(0.75+rnd()*0.5)*4)/4)})})})}
+ const weights=[];for(let k=0;k<=12;k++)weights.push({date:addDays(t,-((42-k*3.5)|0)),kg:f1(84-k*0.2+(rnd()-0.5)*0.4)});
+ const profile:Profile={age:32,sex:'male',cm:178,kg:81.6,units:'metric',activity:1.55,goal:'lose',goalKg:77};
+ const qlog:any={};for(let i=6;i>=0;i--)qlog[addDays(t,-i)]={w:i===0?3:5+Math.floor(rnd()*5),s:i===0?2000:5000+Math.floor(rnd()*5)*1000,p:i===0?10:15+Math.floor(rnd()*5)*5};
+ const base:Data={profile,goals:macros(profile),entries,weights,custom:[],meals:[{id:uid(),name:'Usual breakfast',items:[F('Oatmeal'),F('Banana'),F('Egg')]}],dark:window.matchMedia('(prefers-color-scheme: dark)').matches,quests:DEFQ(),qlog,awards:{}};
+ base.awards=earn(base);return base;
+}
+function load():Data|null{try{const v=JSON.parse(localStorage.getItem(KEY)||'null');if(v&&v.profile&&v.goals&&v.entries){v.quests=v.quests||DEFQ();v.qlog=v.qlog||{};v.awards=v.awards||{};return v}return null}catch(e){return null}}
+
+const card="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-4 sm:p-5 shadow-sm";
+const foc="focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-green-600";
+const B1=`rounded-xl bg-green-700 hover:bg-green-800 text-white font-medium px-4 py-2 ${foc}`;
+const B2=`rounded-xl border border-slate-300 dark:border-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800 font-medium px-3 py-2 text-sm ${foc}`;
+const BS=`rounded-lg px-2 py-1 text-sm text-green-800 dark:text-green-300 hover:bg-green-50 dark:hover:bg-slate-800 ${foc}`;
+const inp=`w-full rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-3 py-2 ${foc}`;
+const mut="text-slate-600 dark:text-slate-400";
+
+function Icon({n}:any){const P:any={home:'M3 11l9-8 9 8v10h-6v-6H9v6H3z',list:'M4 6h16M4 12h16M4 18h10',target:'M12 3a9 9 0 100 18 9 9 0 000-18zm0 5a4 4 0 100 8 4 4 0 000-8z',chart:'M3 17l5-6 4 4 8-10',user:'M12 12a4 4 0 100-8 4 4 0 000 8zm-8 9a8 8 0 0116 0',star:'M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1L3.2 9.5l6.1-.9z'};
+ return <svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d={P[n]}/></svg>}
+
+function Field({id,label,err,hint,children}:any){return <div><label htmlFor={id} className="block text-sm font-medium mb-1">{label}</label>{children}{hint&&<p id={id+'-h'} className={'text-xs mt-1 '+mut}>{hint}</p>}{err&&<p id={id+'-e'} role="alert" className="text-sm text-red-700 dark:text-red-400 mt-1">{err}</p>}</div>}
+function In({id,label,err,hint,...rest}:any){return <Field id={id} label={label} err={err} hint={hint}><input id={id} className={inp} aria-invalid={!!err} aria-describedby={err?id+'-e':hint?id+'-h':undefined} {...rest}/></Field>}
+function Sel({id,label,children,...rest}:any){return <Field id={id} label={label}><select id={id} className={inp} {...rest}>{children}</select></Field>}
+
+function Ring({v,max,label,unit,size=110,big}:any){
+ const pct=max>0?v/max:0,over=pct>1,R=42,C=2*Math.PI*R;
+ return <div className="flex flex-col items-center text-center">
+  <svg width={size} height={size} viewBox="0 0 100 100" role="img" aria-label={`${label}: ${r(v)} of ${r(max)} ${unit}${over?', above goal':''}`}>
+   <circle cx="50" cy="50" r={R} fill="none" strokeWidth="9" className="stroke-slate-200 dark:stroke-slate-700"/>
+   <circle cx="50" cy="50" r={R} fill="none" strokeWidth="9" strokeLinecap="round" strokeDasharray={C} strokeDashoffset={C*(1-Math.min(pct,1))} transform="rotate(-90 50 50)" className={over?'stroke-amber-500':'stroke-green-600 dark:stroke-green-400'}/>
+   <text x="50" y={big?50:55} textAnchor="middle" className="fill-slate-900 dark:fill-slate-100 font-bold" fontSize={big?22:19}>{r(v)}</text>
+   {big&&<text x="50" y="66" textAnchor="middle" className="fill-slate-600 dark:fill-slate-400" fontSize="9">kcal eaten</text>}
+  </svg>
+  <div className="text-sm font-semibold mt-1">{label}</div><div className={'text-xs '+mut}>{r(v)} / {r(max)} {unit}</div></div>}
+
+function DateNav({date,setDate}:any){return <div className="flex items-center gap-2 flex-wrap" role="group" aria-label="Choose date">
+ <button className={B2} onClick={()=>setDate(addDays(date,-1))} aria-label="Previous day">←</button>
+ <div className="font-semibold min-w-[8.5rem] text-center" aria-live="polite">{date===today()?'Today':nice(date)}</div>
+ <button className={B2} onClick={()=>setDate(addDays(date,1))} aria-label="Next day">→</button>
+ <label className="sr-only" htmlFor="dpick">Jump to date</label><input id="dpick" type="date" className={inp+' !w-auto'} value={date} onChange={e=>e.target.value&&setDate(e.target.value)}/>
+ {date!==today()&&<button className={B2} onClick={()=>setDate(today())}>Today</button>}</div>}
+
+function EntryForm({init,meal,pre,foods,onSave,onClose}:any){
+ const b=init||pre||{name:'',serving:'1 serving',cal:'',p:'',c:'',f:''};
+ const [f,setF]=useState<any>({name:b.name,serving:b.serving,servings:String(init?init.servings:1),cal:String(b.cal),p:String(b.p),c:String(b.c),f:String(b.f),meal:init?init.meal:meal,save:false});
+ const [q,setQ]=useState('');const [err,setErr]=useState<any>({});
+ const res=q.trim()?foods.filter((x:Food)=>x.name.toLowerCase().includes(q.trim().toLowerCase())).slice(0,6):[];
+ const set=(k:string)=>(e:any)=>setF({...f,[k]:e.target.value});
+ useEffect(()=>{const h=(e:KeyboardEvent)=>{if(e.key==='Escape')onClose()};window.addEventListener('keydown',h);return()=>window.removeEventListener('keydown',h)},[]);
+ const submit=(e:any)=>{e.preventDefault();const er:any={};
+  const n=(k:string,max:number,l:string)=>{const v=String(f[k]).trim();if(v===''||isNaN(+v)||+v<0||+v>max)er[k]=`${l} must be a number from 0 to ${max}.`};
+  if(!f.name.trim())er.name='Please enter a food name.';
+  if(!f.serving.trim())er.serving='Describe the serving size, e.g. "1 cup".';
+  if(f.servings.trim()===''||isNaN(+f.servings)||+f.servings<=0||+f.servings>50)er.servings='Servings must be more than 0 and at most 50.';
+  n('cal',5000,'Calories');n('p',500,'Protein');n('c',800,'Carbs');n('f',500,'Fat');
+  setErr(er);if(Object.keys(er).length)return;
+  onSave({id:init?.id,meal:f.meal,name:f.name.trim(),serving:f.serving.trim(),servings:+f.servings,cal:+f.cal,p:+f.p,c:+f.c,f:+f.f},f.save);};
+ return <div className="fixed inset-0 z-40 bg-black/50 flex items-end sm:items-center justify-center p-0 sm:p-4" onClick={onClose}>
+ <form role="dialog" aria-modal="true" aria-labelledby="ef-t" onSubmit={submit} noValidate onClick={e=>e.stopPropagation()} className={card+' w-full sm:max-w-lg max-h-[92vh] overflow-y-auto space-y-3 rounded-b-none sm:rounded-b-2xl'}>
+  <h2 id="ef-t" className="text-xl font-bold">{init?'Edit food':'Add food'}</h2>
+  {!init&&<div><In id="fs" label="Search foods" type="search" value={q} onChange={(e:any)=>setQ(e.target.value)} placeholder="e.g. chicken, banana" autoFocus/>
+   {q.trim()&&<ul className="mt-1 border border-slate-200 dark:border-slate-700 rounded-xl divide-y divide-slate-200 dark:divide-slate-700">{res.length?res.map((x:Food)=><li key={x.name}><button type="button" className={'w-full text-left px-3 py-2 hover:bg-slate-100 dark:hover:bg-slate-800 '+foc} onClick={()=>{setF({...f,name:x.name,serving:x.serving,cal:String(x.cal),p:String(x.p),c:String(x.c),f:String(x.f)});setQ('')}}>{x.name} <span className={'text-xs '+mut}>{x.serving} · {x.cal} kcal</span></button></li>):<li className={'px-3 py-2 text-sm '+mut}>No matches — enter it manually below.</li>}</ul>}</div>}
+  <In id="en" label="Food name" value={f.name} onChange={set('name')} err={err.name}/>
+  <div className="grid grid-cols-2 gap-3"><In id="esv" label="Serving size" value={f.serving} onChange={set('serving')} err={err.serving}/><In id="esn" label="Servings" inputMode="decimal" value={f.servings} onChange={set('servings')} err={err.servings}/></div>
+  <p className={'text-xs '+mut}>Enter nutrition values for <strong>one serving</strong>.</p>
+  <div className="grid grid-cols-2 gap-3"><In id="ec" label="Calories (kcal)" inputMode="decimal" value={f.cal} onChange={set('cal')} err={err.cal}/><In id="ep" label="Protein (g)" inputMode="decimal" value={f.p} onChange={set('p')} err={err.p}/><In id="eca" label="Carbs (g)" inputMode="decimal" value={f.c} onChange={set('c')} err={err.c}/><In id="ef" label="Fat (g)" inputMode="decimal" value={f.f} onChange={set('f')} err={err.f}/></div>
+  <Sel id="em" label="Meal" value={f.meal} onChange={set('meal')}>{MEALS.map(([k,l])=><option key={k} value={k}>{l}</option>)}</Sel>
+  {!init&&<label className="flex items-center gap-2 text-sm"><input type="checkbox" className="h-4 w-4 accent-green-700" checked={f.save} onChange={e=>setF({...f,save:e.target.checked})}/>Save to my custom foods</label>}
+  <div className="flex gap-2 justify-end pt-1"><button type="button" className={B2} onClick={onClose}>Cancel</button><button type="submit" className={B1}>{init?'Save changes':'Add to log'}</button></div>
+ </form></div>}
+
+function MealSections({entries,edit,onAdd,onEdit,onDup,onDel,onSaveMeal}:any){
+ return <div className="space-y-4">{MEALS.map(([k,l])=>{const es=entries.filter((e:Entry)=>e.meal===k),t=tot(es);
+ return <section key={k} className={card} aria-labelledby={'m-'+k}>
+  <div className="flex items-center justify-between gap-2 flex-wrap"><h3 id={'m-'+k} className="font-semibold text-lg">{l} <span className={'text-sm font-normal '+mut}>· {r(t.cal)} kcal</span></h3>
+  {edit&&<div className="flex gap-2">{es.length>0&&<button className={B2} onClick={()=>onSaveMeal(k,es)}>Save as meal</button>}<button className={B1+' !py-1.5 text-sm'} onClick={()=>onAdd(k)}>+ Add food</button></div>}</div>
+  {es.length===0?<p className={'text-sm mt-2 '+mut}>Nothing logged yet.</p>:<ul className="mt-2 divide-y divide-slate-200 dark:divide-slate-800">{es.map((e:Entry)=><li key={e.id} className="py-2 flex items-center justify-between gap-2 flex-wrap">
+   <div className="min-w-0"><div className="font-medium">{e.name}</div><div className={'text-xs '+mut}>{e.servings} × {e.serving} · P {r(e.p*e.servings)}g · C {r(e.c*e.servings)}g · F {r(e.f*e.servings)}g</div></div>
+   <div className="flex items-center gap-1"><span className="font-semibold mr-2">{r(e.cal*e.servings)} kcal</span>
+   {edit&&<><button className={BS} onClick={()=>onEdit(e)} aria-label={'Edit '+e.name}>Edit</button><button className={BS} onClick={()=>onDup(e)} aria-label={'Duplicate '+e.name}>Copy</button><button className={BS+' !text-red-700 dark:!text-red-400'} onClick={()=>onDel(e)} aria-label={'Delete '+e.name}>Delete</button></>}</div></li>)}</ul>}
+ </section>})}</div>}
+
+function Dashboard({d,date,setDate,es,go}:any){
+ const t=tot(es),g=d.goals,rem=g.cal-t.cal;
+ const over:string[]=[];if(t.p>g.p*1.1)over.push('protein');if(t.c>g.c*1.1)over.push('carbs');if(t.f>g.f*1.1)over.push('fat');
+ return <div className="space-y-4"><div className="flex items-center justify-between gap-3 flex-wrap"><h1 className="text-2xl font-bold">Dashboard</h1><DateNav date={date} setDate={setDate}/></div>
+ <LevelCard xp={sumXp(d.awards)}><p className="text-sm mt-3">Daily quests: <strong>{d.quests.filter((q:Quest)=>((d.qlog[today()]||{})[q.id]||0)>=q.goal).length}/{d.quests.length}</strong> cleared today · <button className={'underline text-green-800 dark:text-green-300 '+foc} onClick={()=>go('quests')}>Open Quests</button></p></LevelCard>
+ <section className={card} aria-label="Daily summary"><div className="grid sm:grid-cols-2 gap-6 items-center">
+  <div className="flex items-center gap-5 justify-center"><Ring big v={t.cal} max={g.cal} label="Calories" unit="kcal" size={150}/>
+   <dl className="space-y-2"><div><dt className={'text-xs '+mut}>Goal</dt><dd className="text-2xl font-bold">{g.cal}</dd></div><div><dt className={'text-xs '+mut}>{rem>=0?'Remaining':'Above goal'}</dt><dd className="text-2xl font-bold text-green-700 dark:text-green-400">{r(Math.abs(rem))}</dd></div></dl></div>
+  <div className="grid grid-cols-3 gap-2"><Ring v={t.p} max={g.p} label="Protein" unit="g" size={84}/><Ring v={t.c} max={g.c} label="Carbs" unit="g" size={84}/><Ring v={t.f} max={g.f} label="Fat" unit="g" size={84}/></div></div>
+  {(rem<0||over.length>0)&&<p role="status" className="mt-4 rounded-xl bg-amber-50 dark:bg-amber-950 text-amber-900 dark:text-amber-100 p-3 text-sm">{rem<0?`You're about ${r(-rem)} kcal above today's goal — that's okay. One day doesn't define your progress, and you can simply carry on with your next meal or tomorrow. `:''}{over.length>0&&`Your ${over.join(' and ')} ${over.length>1?'are':'is'} a bit above target today; no need to fix it, just something to be aware of.`}</p>}
+  {es.length===0&&<p className={'mt-4 text-sm '+mut}>No foods logged for this day. <button className="underline text-green-800 dark:text-green-300" onClick={()=>go('log')}>Open the Food Log</button> to add some.</p>}
+ </section>
+ <MealSections entries={es}/><button className={B1} onClick={()=>go('log')}>Go to Food Log</button></div>}
+
+function FoodLog({d,up,date,setDate,es,open}:any){
+ const [tgt,setTgt]=useState<Meal>('lunch');
+ const foods:Food[]=[...d.custom,...FOODS];
+ const recent:Food[]=useMemo(()=>{const seen=new Set<string>(),o:Food[]=[];[...d.entries].sort((a:Entry,b:Entry)=>b.date.localeCompare(a.date)).forEach((e:Entry)=>{if(!seen.has(e.name)&&o.length<8){seen.add(e.name);o.push(e)}});return o},[d.entries]);
+ const addMeal=(m:any)=>up({entries:[...d.entries,...m.items.map((i:Food)=>({...i,id:uid(),date,meal:tgt,servings:1}))]});
+ return <div className="space-y-4"><div className="flex items-center justify-between gap-3 flex-wrap"><h1 className="text-2xl font-bold">Food Log</h1><DateNav date={date} setDate={setDate}/></div>
+ <MealSections entries={es} edit onAdd={(m:Meal)=>open({meal:m})} onEdit={(e:Entry)=>open({init:e})}
+  onDup={(e:Entry)=>up({entries:[...d.entries,{...e,id:uid()}]})} onDel={(e:Entry)=>up({entries:d.entries.filter((x:Entry)=>x.id!==e.id)})}
+  onSaveMeal={(k:Meal,items:Entry[])=>{const name=prompt?'':'';up({meals:[...d.meals,{id:uid(),name:`${MEALS.find(m=>m[0]===k)![1]} ${nice(date)}`,items:items.map(i=>({name:i.name,serving:i.serving,cal:i.cal*i.servings,p:i.p*i.servings,c:i.c*i.servings,f:i.f*i.servings}))}]})}}/>
+ <section className={card} aria-labelledby="rf"><div className="flex items-center justify-between flex-wrap gap-2"><h2 id="rf" className="font-semibold text-lg">Recent foods</h2>
+  <div className="w-44"><Sel id="tm" label="Add to meal" value={tgt} onChange={(e:any)=>setTgt(e.target.value)}>{MEALS.map(([k,l])=><option key={k} value={k}>{l}</option>)}</Sel></div></div>
+  <div className="flex flex-wrap gap-2 mt-3">{recent.map(f=><button key={f.name} className={B2} onClick={()=>open({meal:tgt,pre:f})}>{f.name}</button>)}</div></section>
+ <section className={card} aria-labelledby="sm"><h2 id="sm" className="font-semibold text-lg">Saved meals</h2>
+  {d.meals.length===0?<p className={'text-sm mt-2 '+mut}>Use “Save as meal” on any meal above to reuse it later.</p>:<ul className="divide-y divide-slate-200 dark:divide-slate-800 mt-2">{d.meals.map((m:any)=><li key={m.id} className="py-2 flex items-center justify-between gap-2 flex-wrap"><div><div className="font-medium">{m.name}</div><div className={'text-xs '+mut}>{m.items.length} items · {r(m.items.reduce((a:number,i:Food)=>a+i.cal,0))} kcal</div></div>
+   <div className="flex gap-1"><button className={BS} onClick={()=>addMeal(m)}>Add to {MEALS.find(x=>x[0]===tgt)![1]}</button><button className={BS+' !text-red-700 dark:!text-red-400'} aria-label={'Delete saved meal '+m.name} onClick={()=>up({meals:d.meals.filter((x:any)=>x.id!==m.id)})}>Delete</button></div></li>)}</ul>}</section>
+ <section className={card} aria-labelledby="cf"><h2 id="cf" className="font-semibold text-lg">My custom foods</h2>
+  {d.custom.length===0?<p className={'text-sm mt-2 '+mut}>Foods you add manually with “Save to my custom foods” appear here and in search.</p>:<ul className="divide-y divide-slate-200 dark:divide-slate-800 mt-2">{d.custom.map((f:Food)=><li key={f.name} className="py-2 flex items-center justify-between gap-2"><span>{f.name} <span className={'text-xs '+mut}>{f.serving} · {f.cal} kcal</span></span><button className={BS+' !text-red-700 dark:!text-red-400'} aria-label={'Remove '+f.name} onClick={()=>up({custom:d.custom.filter((x:Food)=>x.name!==f.name)})}>Remove</button></li>)}</ul>}</section></div>}
+
+function GoalsView({d,up}:any){
+ const g=d.goals;const [f,setF]=useState<any>({cal:String(g.cal),p:String(g.p),c:String(g.c),f:String(g.f)});const [err,setErr]=useState<any>({});const [ok,setOk]=useState('');
+ const n=(k:string)=>(isNaN(+f[k])||f[k].trim()===''?0:+f[k]);
+ const mc={p:n('p')*4,c:n('c')*4,f:n('f')*9},sum=mc.p+mc.c+mc.f,diff=sum-n('cal');
+ const set=(k:string)=>(e:any)=>{setF({...f,[k]:e.target.value});setOk('')};
+ const save=(e:any)=>{e.preventDefault();const er:any={};
+  ([['cal',800,6000,'Calories'],['p',0,500,'Protein'],['c',0,900,'Carbs'],['f',0,400,'Fat']] as any[]).forEach(([k,lo,hi,l])=>{const v=f[k].trim();if(v===''||isNaN(+v)||+v<lo||+v>hi)er[k]=`${l} must be a number from ${lo} to ${hi}.`});
+  setErr(er);if(Object.keys(er).length)return;up({goals:{cal:+f.cal,p:+f.p,c:+f.c,f:+f.f}});setOk('Goals saved.')};
+ const rows:[string,string,number,number][]=[['Protein','p',mc.p,4],['Carbohydrates','c',mc.c,4],['Fat','f',mc.f,9]];
+ return <div className="space-y-4"><h1 className="text-2xl font-bold">Goals</h1>
+ <form onSubmit={save} noValidate className={card+' space-y-3'}><div className="grid grid-cols-2 gap-3"><In id="gc" label="Daily calories (kcal)" inputMode="numeric" value={f.cal} onChange={set('cal')} err={err.cal}/><In id="gp" label="Protein (g)" inputMode="numeric" value={f.p} onChange={set('p')} err={err.p}/><In id="gca" label="Carbohydrates (g)" inputMode="numeric" value={f.c} onChange={set('c')} err={err.c}/><In id="gf" label="Fat (g)" inputMode="numeric" value={f.f} onChange={set('f')} err={err.f}/></div>
+  <div className="flex flex-wrap gap-2 items-center"><button className={B1}>Save goals</button>
+   <button type="button" className={B2} onClick={()=>{setF({...f,cal:String(sum)});setOk('')}}>Set calories from macros</button>
+   <button type="button" className={B2} onClick={()=>{setF({...f,c:String(Math.max(0,r((n('cal')-n('p')*4-n('f')*9)/4)))});setOk('')}}>Fill carbs to match calories</button></div>
+  {ok&&<p role="status" className="text-green-800 dark:text-green-300 text-sm">{ok}</p>}</form>
+ <section className={card} aria-labelledby="mt"><h2 id="mt" className="font-semibold text-lg mb-2">Macro targets</h2>
+  <div className="overflow-x-auto"><table className="w-full text-sm"><thead><tr className={'text-left '+mut}><th className="py-1">Macro</th><th>Grams</th><th>Calories</th><th>% of macro kcal</th></tr></thead><tbody>
+  {rows.map(([l,k,c])=><tr key={k} className="border-t border-slate-200 dark:border-slate-800"><td className="py-2">{l}</td><td>{n(k)} g</td><td>{r(c)} kcal</td><td>{sum?r(c/sum*100):0}%</td></tr>)}
+  <tr className="border-t-2 border-slate-300 dark:border-slate-600 font-semibold"><td className="py-2">Total</td><td></td><td>{r(sum)} kcal</td><td>100%</td></tr></tbody></table></div>
+  <p role="status" className="mt-3 text-sm">{Math.abs(diff)<=25?'Your macros add up to your calorie goal.':`Your macros add up to ${r(sum)} kcal, which is ${r(Math.abs(diff))} kcal ${diff>0?'above':'below'} your calorie goal.`}</p>
+  <p className={'text-xs mt-2 '+mut}>Protein and carbs are 4 kcal per gram; fat is 9 kcal per gram.</p></section></div>}
+
+function LineChart({pts,goal,unit}:any){
+ const W=400,H=170,pl=38,pr=12,pt=12,pb=26;const vs=pts.map((p:any)=>p.v).concat(goal?[goal]:[]);
+ let lo=Math.min(...vs),hi=Math.max(...vs);if(hi-lo<1){hi+=0.5;lo-=0.5}const pad=(hi-lo)*0.1;lo-=pad;hi+=pad;
+ const t0=new Date(pts[0].date).getTime(),t1=new Date(pts[pts.length-1].date).getTime()||t0+1;
+ const x=(d:string)=>pl+(t1===t0?0.5:(new Date(d).getTime()-t0)/(t1-t0))*(W-pl-pr),y=(v:number)=>pt+(1-(v-lo)/(hi-lo))*(H-pt-pb);
+ return <svg viewBox={`0 0 ${W} ${H}`} className="w-full" role="img" aria-label={`Weight chart from ${f1(pts[0].v)} to ${f1(pts[pts.length-1].v)} ${unit} between ${nice(pts[0].date)} and ${nice(pts[pts.length-1].date)}`}>
+  {[lo+pad,hi-pad].map((v,i)=><g key={i}><line x1={pl} x2={W-pr} y1={y(v)} y2={y(v)} className="stroke-slate-200 dark:stroke-slate-700"/><text x={pl-4} y={y(v)+4} textAnchor="end" fontSize="10" className="fill-slate-600 dark:fill-slate-400">{f1(v)}</text></g>)}
+  {goal&&<g><line x1={pl} x2={W-pr} y1={y(goal)} y2={y(goal)} strokeDasharray="4 4" className="stroke-amber-500"/><text x={W-pr} y={y(goal)-3} textAnchor="end" fontSize="10" className="fill-amber-700 dark:fill-amber-400">Goal {f1(goal)}</text></g>}
+  <polyline fill="none" strokeWidth="2.5" strokeLinejoin="round" className="stroke-green-600 dark:stroke-green-400" points={pts.map((p:any)=>`${x(p.date)},${y(p.v)}`).join(' ')}/>
+  {pts.map((p:any)=><circle key={p.date} cx={x(p.date)} cy={y(p.v)} r="3" className="fill-green-700 dark:fill-green-400"><title>{nice(p.date)}: {f1(p.v)} {unit}</title></circle>)}
+  <text x={pl} y={H-6} fontSize="10" className="fill-slate-600 dark:fill-slate-400">{nice(pts[0].date)}</text><text x={W-pr} y={H-6} textAnchor="end" fontSize="10" className="fill-slate-600 dark:fill-slate-400">{nice(pts[pts.length-1].date)}</text></svg>}
+
+function WeekBars({days,goal}:any){
+ const W=400,H=150,mx=Math.max(goal*1.3,...days.map((x:any)=>x.cal)),bw=34,gap=(W-7*bw)/8,y=(v:number)=>H-22-(v/mx)*(H-34);
+ return <svg viewBox={`0 0 ${W} ${H}`} className="w-full" role="img" aria-label={'Daily calories for the last 7 days: '+days.map((x:any)=>`${nice(x.date)} ${r(x.cal)}`).join(', ')}>
+  {days.map((x:any,i:number)=>{const bx=gap+i*(bw+gap);return <g key={x.date}><rect x={bx} y={y(x.cal)} width={bw} height={H-22-y(x.cal)} rx="5" className={x.cal>goal*1.1?'fill-amber-500':x.cal>0?'fill-green-600 dark:fill-green-500':'fill-slate-200 dark:fill-slate-700'}/>
+   <text x={bx+bw/2} y={H-7} textAnchor="middle" fontSize="10" className="fill-slate-600 dark:fill-slate-400">{new Date(x.date+'T00:00:00').toLocaleDateString(undefined,{weekday:'short'})}</text></g>})}
+  <line x1="0" x2={W} y1={y(goal)} y2={y(goal)} strokeDasharray="4 4" className="stroke-slate-500"/><text x={W-2} y={y(goal)-3} textAnchor="end" fontSize="10" className="fill-slate-700 dark:fill-slate-300">Goal {goal}</text></svg>}
+
+function LevelCard({xp,children}:any){
+ const L=lvl(xp),a=XPT(L),b=XPT(L+1),pct=(xp-a)/(b-a)*100;
+ return <section className={card} aria-label="Level progress"><div className="flex items-center gap-4"><div className="h-16 w-16 shrink-0 rounded-2xl bg-green-700 text-white flex flex-col items-center justify-center" aria-hidden="true"><span className="text-[10px] leading-none">LV</span><span className="text-2xl font-extrabold leading-none">{L}</span></div>
+ <div className="flex-1 min-w-0"><div className="font-bold"><span className="sr-only">Level {L}, </span>{rank(L)}-Rank</div>
+ <div role="progressbar" aria-label={`Level ${L} progress`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={r(pct)} className="h-3 rounded-full bg-slate-200 dark:bg-slate-700 mt-1 overflow-hidden"><div className="h-full bg-green-600 dark:bg-green-400" style={{width:pct+'%'}}/></div>
+ <div className={'text-xs mt-1 '+mut}>{xp} XP · {b-xp} XP to Level {L+1}</div></div></div>{children}</section>}
+
+function QuestForm({init,onSave,onCancel}:any){
+ const [f,setF]=useState<any>({name:init.name||'',unit:init.unit||'',goal:String(init.goal||''),inc:String(init.inc||'')});const [err,setErr]=useState<any>({});
+ const set=(k:string)=>(e:any)=>setF({...f,[k]:e.target.value});
+ const submit=(e:any)=>{e.preventDefault();const er:any={},g=+f.goal,i=+f.inc;
+  if(!f.name.trim()||f.name.length>40)er.name='Enter a quest name (up to 40 characters).';
+  if(!f.unit.trim()||f.unit.length>15)er.unit='Enter a unit such as glasses, steps or reps (up to 15 characters).';
+  if(f.goal.trim()===''||isNaN(g)||g<=0||g>1000000)er.goal='Daily goal must be a number greater than 0.';
+  if(f.inc.trim()===''||isNaN(i)||i<=0||(!er.goal&&i>g))er.inc='Quick-add amount must be more than 0 and no more than the daily goal.';
+  setErr(er);if(Object.keys(er).length)return;onSave({id:init.id,name:f.name.trim(),unit:f.unit.trim(),goal:g,inc:i})};
+ return <form onSubmit={submit} noValidate aria-label={init.id?'Edit quest':'New quest'} className="mt-4 rounded-xl border-2 border-green-600 p-3 space-y-3">
+  <div className="grid sm:grid-cols-2 gap-3"><In id="qn" label="Quest name" value={f.name} onChange={set('name')} err={err.name} placeholder="e.g. Drink water" autoFocus/><In id="qu" label="Unit" value={f.unit} onChange={set('unit')} err={err.unit} placeholder="glasses, steps, reps…"/><In id="qg" label="Daily goal" inputMode="decimal" value={f.goal} onChange={set('goal')} err={err.goal}/><In id="qi" label="Quick-add amount (per tap)" inputMode="decimal" value={f.inc} onChange={set('inc')} err={err.inc}/></div>
+  <div className="flex gap-2"><button className={B1}>{init.id?'Save quest':'Add quest'}</button><button type="button" className={B2} onClick={onCancel}>Cancel</button></div></form>}
+
+function QuestsView({d,up}:any){
+ const t=today(),m=d.qlog[t]||{};const [ed,setEd]=useState<any>(null);
+ const setP=(id:string,v:number)=>up({qlog:{...d.qlog,[t]:{...m,[id]:Math.max(0,v)}}});
+ const done=d.quests.filter((q:Quest)=>(m[q.id]||0)>=q.goal).length,xp=sumXp(d.awards);
+ return <div className="space-y-4"><h1 className="text-2xl font-bold">Quests</h1><LevelCard xp={xp}/>
+ <section className={card} aria-labelledby="dq"><div className="flex items-center justify-between flex-wrap gap-2"><h2 id="dq" className="font-semibold text-lg">Daily quests · {done}/{d.quests.length} cleared</h2><button className={B1+' !py-1.5 text-sm'} onClick={()=>setEd({})}>+ New quest</button></div>
+  <p className={'text-sm mt-1 '+mut}>Make your own quests. Each one you clear earns 25 XP, and clearing them all earns a 50 XP bonus. Quests reset every day.</p>
+  {d.quests.length>0&&done===d.quests.length&&<p role="status" className="mt-3 rounded-xl bg-green-50 dark:bg-green-950 text-green-900 dark:text-green-100 p-3 text-sm">All daily quests cleared — great work!</p>}
+  {d.quests.length===0&&<p className={'text-sm mt-3 '+mut}>No quests yet. Add one like “Drink water”, “Steps” or “Push-ups”.</p>}
+  <ul className="mt-3 space-y-3">{d.quests.map((q:Quest)=>{const v=m[q.id]||0,ok=v>=q.goal;return <li key={q.id} className="rounded-xl border border-slate-200 dark:border-slate-700 p-3">
+   <div className="flex justify-between gap-2 flex-wrap"><div className="font-semibold">{ok?'✓ ':''}{q.name}</div><div className="text-sm">{v.toLocaleString()} / {q.goal.toLocaleString()} {q.unit}</div></div>
+   <div role="progressbar" aria-label={q.name+' progress'} aria-valuemin={0} aria-valuemax={q.goal} aria-valuenow={Math.min(v,q.goal)} className="h-2.5 rounded-full bg-slate-200 dark:bg-slate-700 mt-2 overflow-hidden"><div className="h-full bg-green-600 dark:bg-green-400" style={{width:Math.min(100,v/q.goal*100)+'%'}}/></div>
+   <div className="flex flex-wrap items-center gap-2 mt-2"><button className={B2} onClick={()=>setP(q.id,v+q.inc)} aria-label={`Add ${q.inc} ${q.unit} to ${q.name}`}>+{q.inc.toLocaleString()}</button><button className={B2} onClick={()=>setP(q.id,v-q.inc)} aria-label={`Remove ${q.inc} ${q.unit} from ${q.name}`}>−{q.inc.toLocaleString()}</button>{!ok&&<button className={B2} onClick={()=>setP(q.id,q.goal)}>Mark complete</button>}<span className="flex-1"/>
+    <button className={BS} onClick={()=>setEd(q)} aria-label={'Edit '+q.name}>Edit</button><button className={BS+' !text-red-700 dark:!text-red-400'} onClick={()=>up({quests:d.quests.filter((x:Quest)=>x.id!==q.id)})} aria-label={'Delete '+q.name}>Delete</button></div></li>})}</ul>
+  {ed&&<QuestForm key={ed.id||'new'} init={ed} onCancel={()=>setEd(null)} onSave={(q:any)=>{up({quests:q.id?d.quests.map((x:Quest)=>x.id===q.id?q:x):[...d.quests,{...q,id:uid()}]});setEd(null)}}/>}</section>
+ <section className={card} aria-labelledby="ac"><h2 id="ac" className="font-semibold text-lg mb-3">Achievements · {ACH.filter(a=>('a:'+a.id) in d.awards).length}/{ACH.length}</h2>
+  <ul className="grid sm:grid-cols-2 gap-3">{ACH.map(a=>{const u=('a:'+a.id) in d.awards;return <li key={a.id} className={`rounded-xl border p-3 ${u?'border-green-600 bg-green-50 dark:bg-green-950':'border-slate-200 dark:border-slate-700'}`}><div className="font-semibold">{u?'🏆 ':''}{a.name}<span className="sr-only">{u?' (unlocked)':' (locked)'}</span></div><div className={'text-sm '+mut}>{a.desc}</div><div className="text-xs mt-1 font-medium">{u?'Unlocked · ':'Locked · '}+{a.xp} XP</div></li>})}</ul></section></div>}
+
+function Progress({d,up}:any){
+ const u=d.profile.units,wu=u==='metric'?'kg':'lb';const [dt,setDt]=useState(today());const [w,setW]=useState('');const [err,setErr]=useState('');
+ const ws=[...d.weights].sort((a:any,b:any)=>a.date.localeCompare(b.date));
+ const add=(e:any)=>{e.preventDefault();const kg=fW(+w,u);if(w.trim()===''||isNaN(+w)||kg<30||kg>300){setErr(`Enter a weight between ${r(dW(30,u))} and ${r(dW(300,u))} ${wu}.`);return}
+  if(!dt||dt>today()){setErr('Choose a date that is today or earlier.');return}setErr('');
+  const nw=[...d.weights.filter((x:any)=>x.date!==dt),{date:dt,kg}].sort((a:any,b:any)=>a.date.localeCompare(b.date));up({weights:nw,profile:{...d.profile,kg:nw[nw.length-1].kg}});setW('')};
+ const cur=ws.length?ws[ws.length-1].kg:d.profile.kg,start=ws.length?ws[0].kg:cur,ch=cur-start;
+ const sug=macros({...d.profile,kg:cur});
+ const days=[...Array(7)].map((_,i)=>{const date=addDays(today(),i-6),es=d.entries.filter((e:Entry)=>e.date===date);return{date,n:es.length,...tot(es)}});
+ const lg=days.filter(x=>x.n>0),L=lg.length||1,avg=(k:string)=>lg.reduce((a:number,x:any)=>a+x[k],0)/L;
+ const calMet=lg.filter(x=>x.cal>=d.goals.cal*0.9&&x.cal<=d.goals.cal*1.1).length,pMet=lg.filter(x=>x.p>=d.goals.p*0.9).length;
+ const St=({l,v}:any)=><div className={card+' !p-3'}><div className={'text-xs '+mut}>{l}</div><div className="text-xl font-bold">{v}</div></div>;
+ return <div className="space-y-4"><h1 className="text-2xl font-bold">Progress</h1>
+ <section aria-label="Weight summary" className="grid grid-cols-2 lg:grid-cols-4 gap-3"><St l="Starting weight" v={`${f1(dW(start,u))} ${wu}`}/><St l="Current weight" v={`${f1(dW(cur,u))} ${wu}`}/><St l="Goal weight" v={`${f1(dW(d.profile.goalKg,u))} ${wu}`}/><St l="Overall change" v={`${ch>0?'+':''}${f1(dW(ch,u))} ${wu}`}/></section>
+ <section className={card} aria-labelledby="wt"><h2 id="wt" className="font-semibold text-lg mb-2">Weight over time</h2>{ws.length>1?<LineChart pts={ws.map((x:any)=>({date:x.date,v:dW(x.kg,u)}))} goal={dW(d.profile.goalKg,u)} unit={wu}/>:<p className={'text-sm '+mut}>Log at least two weigh-ins to see your chart.</p>}
+  <form onSubmit={add} noValidate className="mt-4 flex flex-wrap items-end gap-3"><div className="w-44"><In id="wd" label="Date" type="date" max={today()} value={dt} onChange={(e:any)=>setDt(e.target.value)}/></div><div className="w-36"><In id="ww" label={`Weight (${wu})`} inputMode="decimal" value={w} onChange={(e:any)=>setW(e.target.value)}/></div><button className={B1}>Log weight</button></form>
+  {err&&<p role="alert" className="text-sm text-red-700 dark:text-red-400 mt-2">{err}</p>}
+  {ws.length>0&&<details className="mt-3"><summary className={'cursor-pointer text-sm '+foc}>Weigh-in history ({ws.length})</summary><ul className="mt-2 text-sm divide-y divide-slate-200 dark:divide-slate-800">{[...ws].reverse().map((x:any)=><li key={x.date} className="py-1 flex justify-between"><span>{nice(x.date)} — {f1(dW(x.kg,u))} {wu}</span><button className={BS+' !text-red-700 dark:!text-red-400'} aria-label={'Delete weigh-in '+nice(x.date)} onClick={()=>up({weights:d.weights.filter((y:any)=>y.date!==x.date)})}>Delete</button></li>)}</ul></details>}</section>
+ <section className={card} aria-labelledby="rc"><h2 id="rc" className="font-semibold text-lg">Update goals for your current weight</h2>
+  <p className="text-sm mt-1">At {f1(dW(cur,u))} {wu}, an estimated target is about <strong>{sug.cal} kcal</strong> (P {sug.p}g · C {sug.c}g · F {sug.f}g). Your current goal is {d.goals.cal} kcal.</p>
+  <button className={B1+' mt-3'} onClick={()=>up({goals:sug,profile:{...d.profile,kg:cur}})}>Update my calorie &amp; macro goals</button></section>
+ <section className={card} aria-labelledby="wi"><h2 id="wi" className="font-semibold text-lg mb-2">Weekly insights (last 7 days)</h2>
+  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3"><St l="Avg calories" v={`${r(avg('cal'))}`}/><St l="Avg protein" v={`${r(avg('p'))} g`}/><St l="Avg carbs" v={`${r(avg('c'))} g`}/><St l="Avg fat" v={`${r(avg('f'))} g`}/></div>
+  <WeekBars days={days} goal={d.goals.cal}/>
+  <ul className="mt-3 text-sm space-y-1"><li>Calorie goal met (within 10%): <strong>{calMet} of {lg.length}</strong> logged days</li><li>Protein goal met (at least 90%): <strong>{pMet} of {lg.length}</strong> logged days</li></ul>
+  <p className="mt-3 rounded-xl bg-green-50 dark:bg-green-950 text-green-900 dark:text-green-100 p-3 text-sm" role="status">{lg.length===0?'Log a few days of food to see your weekly summary.':pMet>=5?`Great consistency — you hit your protein goal on ${pMet} days. Keep it up!`:calMet>=4?`Nice work staying close to your calorie goal on ${calMet} days.`:`You logged ${lg.length} day${lg.length>1?'s':''} this week — showing up is what builds the habit. Small steps count.`}</p>
+  <p className={'text-xs mt-2 '+mut}>Averages use days where you logged food.</p></section></div>}
+
+function ProfileView({d,up,resetSample}:any){
+ const p=d.profile;const mk=(p:Profile)=>({age:String(p.age),sex:p.sex,h:String(f1(dH(p.cm,p.units))),w:String(f1(dW(p.kg,p.units))),gw:String(f1(dW(p.goalKg,p.units))),units:p.units,act:String(p.activity),goal:p.goal});
+ const [f,setF]=useState<any>(mk(p));const [err,setErr]=useState<any>({});const [ok,setOk]=useState('');const [cf,setCf]=useState(false);
+ const set=(k:string)=>(e:any)=>{setF({...f,[k]:e.target.value});setOk('')};
+ const units=(nu:string)=>{const c=(v:string,a:any,b:any)=>isNaN(+v)||v.trim()===''?v:String(f1(b(a(+v,f.units),nu)));setF({...f,units:nu,h:c(f.h,fH,dH),w:c(f.w,fW,dW),gw:c(f.gw,fW,dW)})};
+ const save=(e:any)=>{e.preventDefault();const er:any={},u=f.units;const num=(k:string)=>f[k].trim()===''||isNaN(+f[k])?NaN:+f[k];
+  const age=num('age'),cm=fH(num('h'),u),kg=fW(num('w'),u),gk=fW(num('gw'),u);
+  if(!(age>=18&&age<=100))er.age='Enter an age from 18 to 100 (this calculator is for adults).';
+  if(!(cm>=100&&cm<=250))er.h=`Enter a realistic height (${r(dH(100,u))}–${r(dH(250,u))} ${u==='metric'?'cm':'in'}).`;
+  if(!(kg>=30&&kg<=300))er.w=`Enter a weight between ${r(dW(30,u))} and ${r(dW(300,u))} ${u==='metric'?'kg':'lb'}.`;
+  if(!(gk>=30&&gk<=300))er.gw=`Enter a goal weight between ${r(dW(30,u))} and ${r(dW(300,u))} ${u==='metric'?'kg':'lb'}.`;
+  setErr(er);if(Object.keys(er).length)return;up({profile:{age,sex:f.sex,cm,kg,units:u,activity:+f.act,goal:f.goal,goalKg:gk}});setOk('Profile saved.')};
+ const b=bmr(p),t=tdee(p),tg=target(p),m=macros(p);
+ return <div className="space-y-4"><h1 className="text-2xl font-bold">Profile</h1>
+ <form onSubmit={save} noValidate className={card+' space-y-3'} aria-label="Profile form">
+  <div className="grid sm:grid-cols-2 gap-3"><In id="pa" label="Age (years)" inputMode="numeric" value={f.age} onChange={set('age')} err={err.age}/>
+   <Sel id="ps" label="Sex (used in the formula)" value={f.sex} onChange={set('sex')}><option value="male">Male</option><option value="female">Female</option></Sel>
+   <Sel id="pu" label="Preferred units" value={f.units} onChange={(e:any)=>units(e.target.value)}><option value="metric">Metric (kg, cm)</option><option value="imperial">Imperial (lb, in)</option></Sel>
+   <In id="ph" label={`Height (${f.units==='metric'?'cm':'inches'})`} inputMode="decimal" value={f.h} onChange={set('h')} err={err.h}/>
+   <In id="pw" label={`Current weight (${f.units==='metric'?'kg':'lb'})`} inputMode="decimal" value={f.w} onChange={set('w')} err={err.w}/>
+   <In id="pg" label={`Goal weight (${f.units==='metric'?'kg':'lb'})`} inputMode="decimal" value={f.gw} onChange={set('gw')} err={err.gw}/>
+   <Sel id="pac" label="Activity level" value={f.act} onChange={set('act')}>{ACT.map(([v,l])=><option key={v} value={v}>{l}</option>)}</Sel>
+   <Sel id="pgo" label="Goal" value={f.goal} onChange={set('goal')}><option value="lose">Lose weight</option><option value="maintain">Maintain weight</option><option value="gain">Gain weight</option></Sel></div>
+  <button className={B1}>Save profile</button>{ok&&<span role="status" className="ml-3 text-sm text-green-800 dark:text-green-300">{ok}</span>}</form>
+ <section className={card} aria-labelledby="est"><h2 id="est" className="font-semibold text-lg mb-3">Your estimates</h2>
+  <dl className="grid grid-cols-3 gap-3 text-center"><div><dt className={'text-xs '+mut}>BMR</dt><dd className="text-2xl font-bold">{r(b)}</dd></div><div><dt className={'text-xs '+mut}>Maintenance (TDEE)</dt><dd className="text-2xl font-bold">{r(t)}</dd></div><div><dt className={'text-xs '+mut}>Suggested daily target</dt><dd className="text-2xl font-bold text-green-700 dark:text-green-400">{tg}</dd></div></dl>
+  <p className="text-sm mt-3">Calculated with the Mifflin-St Jeor equation, then multiplied by your activity level. {p.goal==='lose'?'For weight loss we subtract about 500 kcal/day.':p.goal==='gain'?'For weight gain we add about 300 kcal/day.':'For maintenance, your target equals your TDEE.'} Suggested macros: P {m.p}g · C {m.c}g · F {m.f}g.</p>
+  <button className={B1+' mt-3'} onClick={()=>up({goals:m})}>Use these as my daily goals</button>
+  <p className="mt-3 text-sm rounded-xl bg-slate-100 dark:bg-slate-800 p-3"><strong>Estimates only.</strong> These numbers are approximations, not medical advice, and individual needs vary. Results aren't guaranteed. Please talk with a doctor or registered dietitian before making major changes to your diet, especially if you have a medical condition.</p></section>
+ <section className={card} aria-labelledby="dat"><h2 id="dat" className="font-semibold text-lg">Data &amp; appearance</h2>
+  <p className={'text-sm mt-1 '+mut}>Everything is stored only in this browser (local storage). No account needed.</p>
+  <div className="flex flex-wrap gap-2 mt-3 items-center"><button className={B2} aria-pressed={d.dark} onClick={()=>up({dark:!d.dark})}>{d.dark?'Switch to light mode':'Switch to dark mode'}</button>
+  {!cf?<button className={B2} onClick={()=>setCf(true)}>Reset sample data</button>:<span role="alertdialog" aria-label="Confirm reset" className="flex gap-2 items-center text-sm">Replace all your data with the sample data?<button className={B1+' !py-1.5'} onClick={()=>{resetSample();setCf(false)}}>Yes, reset</button><button className={B2} onClick={()=>setCf(false)}>Cancel</button></span>}</div></section></div>}
+
+function App(){
+ const [d,setD]=useState<Data>(()=>load()||sample());const [view,setView]=useState('dashboard');const [date,setDate]=useState(today());const [form,setForm]=useState<any>(null);
+ useEffect(()=>{try{localStorage.setItem(KEY,JSON.stringify(d))}catch(e){}},[d]);
+ useEffect(()=>{document.documentElement.classList.toggle('dark',d.dark)},[d.dark]);
+ const [toast,setToast]=useState('');
+ useEffect(()=>{const c=earn(d),fresh=Object.keys(c).filter(k=>!(k in d.awards));if(!fresh.length)return;
+  const gain=fresh.reduce((s,k)=>s+c[k],0),xp0=sumXp(d.awards),ach=fresh.filter(k=>k.startsWith('a:')).map(k=>ACH.find(x=>'a:'+x.id===k)!.name),qc=fresh.some(k=>k.startsWith('q:'));
+  setToast(`${qc?'Quest cleared! ':''}${ach.length?'🏆 Achievement: '+ach.join(', ')+' — ':''}+${gain} XP${lvl(xp0+gain)>lvl(xp0)?` · LEVEL UP! You are now Lv ${lvl(xp0+gain)}`:''}`);
+  setD(x=>({...x,awards:{...x.awards,...c}}))},[d.entries,d.weights,d.quests,d.qlog,d.awards,d.goals]);
+ useEffect(()=>{if(!toast)return;const t=setTimeout(()=>setToast(''),7000);return()=>clearTimeout(t)},[toast]);
+ const up=(p:Partial<Data>)=>setD(x=>({...x,...p}));
+ const es=d.entries.filter(e=>e.date===date);
+ const save=(e:any,toCustom:boolean)=>{const {id,...rest}=e;
+  up({entries:id?d.entries.map(x=>x.id===id?{...x,...rest}:x):[...d.entries,{...rest,id:uid(),date}],custom:toCustom&&!d.custom.some(c=>c.name===e.name)?[{name:e.name,serving:e.serving,cal:e.cal,p:e.p,c:e.c,f:e.f},...d.custom]:d.custom});setForm(null)};
+ const nav:[string,string,string][]=[['dashboard','Dashboard','home'],['log','Food Log','list'],['quests','Quests','star'],['goals','Goals','target'],['progress','Progress','chart'],['profile','Profile','user']];
+ const go=(v:string)=>{setView(v);window.scrollTo(0,0)};
+ const NB=({v,l,i,side}:any)=><button onClick={()=>go(v)} aria-current={view===v?'page':undefined} className={`${side?'flex items-center gap-3 px-3 py-2.5 rounded-xl w-full text-left':'flex flex-col items-center gap-0.5 py-2 flex-1 text-[11px]'} font-medium ${foc} ${view===v?'text-green-800 dark:text-green-300 '+(side?'bg-green-50 dark:bg-slate-800':''):'text-slate-700 dark:text-slate-300'}`}><Icon n={i}/>{l}</button>;
+ return <div>
+  <aside className="hidden md:flex fixed left-0 top-0 h-full w-60 flex-col bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 p-4">
+   <div className="text-2xl font-extrabold text-green-700 dark:text-green-400 mb-6 px-2">MacroTrack</div>
+   <nav aria-label="Main" className="space-y-1">{nav.map(([v,l,i])=><NB key={v} v={v} l={l} i={i} side/>)}</nav>
+   <button className={B2+' mt-auto'} aria-pressed={d.dark} onClick={()=>up({dark:!d.dark})}>{d.dark?'☀ Light mode':'☾ Dark mode'}</button></aside>
+  <header className="md:hidden flex items-center justify-between px-4 pt-3"><span className="text-xl font-extrabold text-green-700 dark:text-green-400">MacroTrack</span><button className={B2} aria-pressed={d.dark} aria-label="Toggle dark mode" onClick={()=>up({dark:!d.dark})}>{d.dark?'☀':'☾'}</button></header>
+  <main id="main" className="md:ml-60 max-w-3xl mx-auto px-4 py-4 pb-28 md:pb-10 space-y-4">
+   {view==='dashboard'&&<Dashboard d={d} date={date} setDate={setDate} es={es} go={go}/>}
+   {view==='log'&&<FoodLog d={d} up={up} date={date} setDate={setDate} es={es} open={setForm}/>}
+   {view==='quests'&&<QuestsView d={d} up={up}/>}
+   {view==='goals'&&<GoalsView d={d} up={up}/>}
+   {view==='progress'&&<Progress d={d} up={up}/>}
+   {view==='profile'&&<ProfileView d={d} up={up} resetSample={()=>{setD(sample());setDate(today())}}/>}
+   <p className={'text-xs text-center pt-4 '+mut}>MacroTrack provides estimates only — not medical advice, and no results are guaranteed.</p></main>
+  <nav aria-label="Main" className="md:hidden fixed bottom-0 inset-x-0 z-30 flex bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 pb-[env(safe-area-inset-bottom)]">{nav.map(([v,l,i])=><NB key={v} v={v} l={l} i={i}/>)}</nav>
+  <div role="status" aria-live="polite" className="fixed left-1/2 -translate-x-1/2 bottom-24 md:bottom-6 z-50 w-[92%] max-w-md pointer-events-none">{toast&&<div className="rounded-2xl bg-green-800 text-white px-4 py-3 shadow-lg text-sm font-medium">{toast}</div>}</div>
+  {form&&<EntryForm init={form.init} meal={form.meal||'breakfast'} pre={form.pre} foods={[...d.custom,...FOODS]} onSave={save} onClose={()=>setForm(null)}/>}
+ </div>}
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+<script>
+try{
+var out=Babel.transform(document.getElementById('src').textContent,{presets:[['typescript',{isTSX:true,allExtensions:true}],'react']}).code;
+var s=document.createElement('script');s.textContent=out;document.body.appendChild(s);
+}catch(e){document.getElementById('root').innerHTML='<p style="padding:1rem">Sorry, MacroTrack failed to load: '+e.message+'</p>'}
+</script>
+</body>
+</html>
